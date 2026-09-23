@@ -1,0 +1,20 @@
+spring:
+  application:
+    name: exam
+
+server:
+  port: 8080
+  error:
+    include-message: never
+    include-stacktrace: never
+
+petstore:
+  base-url: https://petstore.swagger.io/v2
+  connect-timeout: 3s
+  read-timeout: 5s
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss.SSS} %5p [%X{requestId:-no-request-id}] %-45.45logger{45} : %replace(%m){'[\\r\\n]+', ' '}%n"
+  level:
+    com.example.exam: INFO
