@@ -5,6 +5,7 @@ import java.net.URI;
 import com.example.exam.model.PetRegistration;
 import com.example.exam.model.request.CreatePetRequest;
 import com.example.exam.model.response.CreatePetResponse;
+import com.example.exam.model.response.PetListResponse;
 import com.example.exam.model.response.PetResponse;
 import com.example.exam.service.PetService;
 import jakarta.validation.Valid;
@@ -32,6 +33,11 @@ class PetController {
 	@GetMapping("/{petId}")
 	PetResponse getPet(@PathVariable @Positive long petId) {
 		return this.petService.findPet(petId);
+	}
+
+	@GetMapping("/list/{petIds}")
+	PetListResponse getPets(@PathVariable String petIds) {
+		return this.petService.findMultiplePets(petIds);
 	}
 
 	@PostMapping

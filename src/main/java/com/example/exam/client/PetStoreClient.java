@@ -2,14 +2,25 @@ package com.example.exam.client;
 
 import com.example.exam.exception.PetNotFoundException;
 import com.example.exam.exception.PetStoreUnavailableException;
+import com.example.exam.exception.TimeoutException;
 import com.example.exam.model.Pet;
 import com.example.exam.model.external.PetStorePayload;
 
+import com.example.exam.model.response.PetListResponse;
+import com.example.exam.model.response.PetResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
+import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.stereotype.Component;
+import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
 import org.springframework.web.client.RestClientException;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Único punto del sistema que conoce el contrato de la tienda: hacia afuera entrega objetos de
@@ -29,9 +40,24 @@ public class PetStoreClient {
 	}
 
 	public Pet findById(long petId) {
+		ClientHttpRequestInterceptor delayInterceptor = (request, body, execution) -> {
+			try {
+				// Sleep for 3 seconds (3000ms) to make the request take longer
+				Thread.sleep(100);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+			}
+			return execution.execute(request, body);
+		};
+
+		RestClient rc = RestClient.builder()
+			.baseUrl("https://petstore.swagger.io/v2")
+			.requestInterceptor(delayInterceptor) // <--- Injects the response delay
+			.build();
+
 		PetStorePayload payload;
 		try {
-			payload = this.restClient.get()
+			payload = rc.get()
 				.uri(PET_BY_ID, petId)
 				.retrieve()
 				.onStatus(status -> status.isSameCodeAs(HttpStatus.NOT_FOUND), (request, response) -> {
@@ -39,9 +65,13 @@ public class PetStoreClient {
 				})
 				.body(PetStorePayload.class);
 		}
+		catch (ResourceAccessException rae){
+			throw new TimeoutException();
+		}
 		catch (RestClientException ex) {
 			throw new PetStoreUnavailableException("Falló la consulta de la mascota %d".formatted(petId), ex);
 		}
+
 		return toDomain(payload, "consultar la mascota %d".formatted(petId));
 	}
 
@@ -59,6 +89,35 @@ public class PetStoreClient {
 			throw new PetStoreUnavailableException("Falló el registro de la mascota %d".formatted(pet.id()), ex);
 		}
 		return toDomain(payload, "registrar la mascota %d".formatted(pet.id()));
+	}
+
+	public PetListResponse findList(String[] petIds) {
+		List<PetResponse> responses = new ArrayList<>();
+		int totalTasks = petIds.length;
+		int maxThreads = 3;
+
+		ExecutorService executor = Executors.newFixedThreadPool(maxThreads);
+
+		for (int i = 0; i < totalTasks; i++) {
+			final int taskId = i;
+			executor.submit(() -> {
+				System.out.println("Processing task " + taskId + " on thread " + Thread.currentThread().getName());
+				// va a buscar la mascota por id
+				Pet p = this.findById(Long.parseLong(petIds[taskId]));
+				responses.add(new PetResponse(p.id(),p.name(),p.status()));
+			});
+		}
+
+		executor.shutdown();
+		try {
+			if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
+				executor.shutdownNow();
+			}
+		} catch (InterruptedException e) {
+			executor.shutdownNow();
+		}
+
+		return new PetListResponse(responses);
 	}
 
 	/**
