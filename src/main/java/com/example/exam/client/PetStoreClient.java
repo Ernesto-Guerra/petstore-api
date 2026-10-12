@@ -10,7 +10,6 @@ import com.example.exam.model.response.PetListResponse;
 import com.example.exam.model.response.PetResponse;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
-import org.springframework.http.client.ClientHttpRequestInterceptor;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.ResourceAccessException;
 import org.springframework.web.client.RestClient;
@@ -18,9 +17,10 @@ import org.springframework.web.client.RestClientException;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
-import java.util.concurrent.TimeUnit;
+import java.util.concurrent.Future;
 
 /**
  * Único punto del sistema que conoce el contrato de la tienda: hacia afuera entrega objetos de
@@ -40,24 +40,9 @@ public class PetStoreClient {
 	}
 
 	public Pet findById(long petId) {
-		ClientHttpRequestInterceptor delayInterceptor = (request, body, execution) -> {
-			try {
-				// Sleep for 3 seconds (3000ms) to make the request take longer
-				Thread.sleep(100);
-			} catch (InterruptedException e) {
-				Thread.currentThread().interrupt();
-			}
-			return execution.execute(request, body);
-		};
-
-		RestClient rc = RestClient.builder()
-			.baseUrl("https://petstore.swagger.io/v2")
-			.requestInterceptor(delayInterceptor) // <--- Injects the response delay
-			.build();
-
 		PetStorePayload payload;
 		try {
-			payload = rc.get()
+			payload = this.restClient.get()
 				.uri(PET_BY_ID, petId)
 				.retrieve()
 				.onStatus(status -> status.isSameCodeAs(HttpStatus.NOT_FOUND), (request, response) -> {
@@ -92,32 +77,52 @@ public class PetStoreClient {
 	}
 
 	public PetListResponse findList(String[] petIds) {
-		List<PetResponse> responses = new ArrayList<>();
 		int totalTasks = petIds.length;
 		int maxThreads = 3;
 
 		ExecutorService executor = Executors.newFixedThreadPool(maxThreads);
+		List<Future<PetResponse>> tasks = new ArrayList<>(totalTasks);
 
 		for (int i = 0; i < totalTasks; i++) {
 			final int taskId = i;
-			executor.submit(() -> {
-				System.out.println("Processing task " + taskId + " on thread " + Thread.currentThread().getName());
+			tasks.add(executor.submit(() -> {
 				// va a buscar la mascota por id
 				Pet p = this.findById(Long.parseLong(petIds[taskId]));
-				responses.add(new PetResponse(p.id(),p.name(),p.status()));
-			});
+				return new PetResponse(p.id(), p.name(), p.status());
+			}));
 		}
 
 		executor.shutdown();
-		try {
-			if (!executor.awaitTermination(60, TimeUnit.SECONDS)) {
-				executor.shutdownNow();
-			}
-		} catch (InterruptedException e) {
-			executor.shutdownNow();
+
+		// Las respuestas se recogen en el hilo llamante y en el orden solicitado: así ninguna
+		// lista se comparte entre hilos y el resultado no depende de quién termine primero.
+		List<PetResponse> responses = new ArrayList<>(totalTasks);
+		for (Future<PetResponse> task : tasks) {
+			responses.add(resultadoDe(task));
 		}
 
 		return new PetListResponse(responses);
+	}
+
+	/**
+	 * El fallo de una consulta en paralelo llega envuelto en {@code ExecutionException}: se
+	 * desenvuelve el original para que el manejador de errores decida el código de respuesta a
+	 * partir del fallo real, en lugar de devolver una lista incompleta con un 200.
+	 */
+	private static PetResponse resultadoDe(Future<PetResponse> task) {
+		try {
+			return task.get();
+		}
+		catch (ExecutionException ex) {
+			if (ex.getCause() instanceof RuntimeException causa) {
+				throw causa;
+			}
+			throw new IllegalStateException("Falló una consulta en paralelo", ex.getCause());
+		}
+		catch (InterruptedException ex) {
+			Thread.currentThread().interrupt();
+			throw new IllegalStateException("Se interrumpió la consulta de mascotas en paralelo", ex);
+		}
 	}
 
 	/**
